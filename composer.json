@@ -1,0 +1,20 @@
+{
+  "name": "phpdb/phpdb",
+  "description": "This is mysql database library for simple and fast database query.",
+  "type": "library",
+  "license": "MIT",
+  "autoload": {
+    "psr-4": {
+      "phpdb\\phpdb\\": "src/"
+    }
+  },
+  "authors": [
+    {
+      "name": "Reymark Balaod",
+      "email": "reymarkbalaod@gmail.com"
+    }
+  ],
+  "require": {
+    "php": ">=7.4"
+  }
+}
