@@ -1,11 +1,11 @@
 {
-  "name": "phpdb/phpdb",
-  "description": "This is mysql database library for simple and fast database query.",
+  "name": "reymark/database",
+  "description": "A lightweight hybrid database handler for PHP using PDO, with PicoDB-style syntax and legacy static query support.",
   "type": "library",
   "license": "MIT",
   "autoload": {
     "psr-4": {
-      "phpdb\\phpdb\\": "src/"
+      "Reymark\\Database\\": "src/"
     }
   },
   "authors": [
