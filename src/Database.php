@@ -1,25 +1,36 @@
 <?php
-namespace Reymark\Database;
+namespace Database;
 
 use PDO;
 use PDOException;
+use Exception;
 
-class Database
+final class Database
 {
+    /** @var array<int,array<string,string>> */
     protected static array $config = [];
     protected static int $indexdb = 0;
-    protected PDO $pdo;
+    protected readonly PDO $pdo;
 
-    // Query builder components
+    // Query builder parts
     protected string $table = '';
+    protected array $columns = ['*'];
+    protected array $joins = [];
     protected array $where = [];
+    protected array $groupBy = [];
+    protected array $having = [];
     protected string $orderBy = '';
     protected ?int $limit = null;
+    protected ?int $offset = null;
     protected array $bindings = [];
+    protected bool $debug = false;
 
+    // ===========================
+    // CORE CONNECTION
+    // ===========================
     public function __construct(?array $config = null)
     {
-        if ($config) {
+        if ($config !== null) {
             self::setConfig([$config]);
         }
 
@@ -38,14 +49,11 @@ class Database
 
     protected function connect(int $dbIndex): PDO
     {
-        if (empty(self::$config)) {
-            throw new \Exception("Database config not set. Use Database::setConfig() first.");
+        if (self::$config === []) {
+            throw new Exception("Database config not set. Use Database::setConfig() first.");
         }
 
-        $db = self::$config[$dbIndex] ?? null;
-        if (!$db) {
-            throw new \Exception("Database index {$dbIndex} not found in configuration.");
-        }
+        $db = self::$config[$dbIndex] ?? throw new Exception("Database index {$dbIndex} not found in configuration.");
 
         $dsn = "mysql:host={$db['host']};dbname={$db['dbname']};charset=utf8mb4";
         $pdo = new PDO($dsn, $db['username'], $db['password']);
@@ -55,51 +63,119 @@ class Database
     }
 
     // ===========================
-    // STATIC QUERY FUNCTIONS
+    // STATIC QUICK QUERY
     // ===========================
-    public static function query(string $sql, array $params = [], ?int $dbIndex = null, bool $single = false)
-    {
+    public static function query(
+        string $sql,
+        array $params = [],
+        ?int $dbIndex = null,
+        bool $single = false
+    ): mixed {
         $db = new self();
         $pdo = $db->connect($dbIndex ?? self::$indexdb);
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
 
-        if (preg_match('/^\s*(SELECT)\b/i', $sql)) {
-            return $single ? $stmt->fetch() : $stmt->fetchAll();
-        } elseif (preg_match('/^\s*(INSERT)\b/i', $sql)) {
-            return $pdo->lastInsertId();
-        } elseif (preg_match('/^\s*(UPDATE|DELETE)\b/i', $sql)) {
-            return $stmt->rowCount();
-        }
-
-        return true;
+        return match (strtoupper(strtok(trim($sql), ' '))) {
+            'SELECT' => $single ? $stmt->fetch() : $stmt->fetchAll(),
+            'INSERT' => $pdo->lastInsertId(),
+            'UPDATE', 'DELETE' => $stmt->rowCount(),
+            default => true,
+        };
     }
 
     // ===========================
-    // PICO-LIKE BUILDER
+    // BUILDER METHODS
     // ===========================
     public function table(string $table): self
     {
+        $this->reset();
         $this->table = $table;
-        $this->where = [];
-        $this->bindings = [];
-        $this->orderBy = '';
-        $this->limit = null;
         return $this;
     }
 
-    public function where(string $column, $operatorOrValue, $value = null): self
+    /**
+     * Select columns with or without aliases.
+     * Accepts:
+     *   ->select(['id', 'name AS username'])
+     *   ->select(['username' => 'name'])
+     */
+    public function select(array|string $columns = ['*']): self
     {
-        if ($value === null) {
-            $value = $operatorOrValue;
-            $operator = '=';
-        } else {
-            $operator = $operatorOrValue;
+        if (is_string($columns)) {
+            $columns = array_map('trim', explode(',', $columns));
         }
 
-        $param = ':' . str_replace('.', '_', $column) . count($this->bindings);
+        $this->columns = [];
+        foreach ($columns as $key => $col) {
+            if (is_string($key)) {
+                // Associative array: ['alias' => 'column']
+                $this->columns[] = "`$col` AS `$key`";
+            } elseif (str_contains($col, ' AS ') || str_contains($col, ' as ')) {
+                // Raw alias string
+                $this->columns[] = $col;
+            } else {
+                $this->columns[] = "`" . str_replace('.', '`.`', $col) . "`";
+            }
+        }
+
+        return $this;
+    }
+
+    /**
+     * Add raw select columns (no escaping).
+     */
+    public function selectRaw(string $raw): self
+    {
+        $this->columns[] = $raw;
+        return $this;
+    }
+
+    public function join(string $table, string $first, string $operator, string $second, string $type = 'INNER'): self
+    {
+        $this->joins[] = strtoupper($type) . " JOIN `$table` ON $first $operator $second";
+        return $this;
+    }
+
+    public function leftJoin(string $table, string $first, string $operator, string $second): self
+    {
+        return $this->join($table, $first, $operator, $second, 'LEFT');
+    }
+
+    public function rightJoin(string $table, string $first, string $operator, string $second): self
+    {
+        return $this->join($table, $first, $operator, $second, 'RIGHT');
+    }
+
+    public function where(string $column, mixed $operatorOrValue, mixed $value = null): self
+    {
+        [$operator, $val] = $value === null
+            ? ['=', $operatorOrValue]
+            : [$operatorOrValue, $value];
+
+        $param = ':w_' . count($this->bindings);
         $this->where[] = "`$column` $operator $param";
-        $this->bindings[$param] = $value;
+        $this->bindings[$param] = $val;
+        return $this;
+    }
+
+    public function whereRaw(string $condition, array $params = []): self
+    {
+        $this->where[] = $condition;
+        $this->bindings += $params;
+        return $this;
+    }
+
+    public function groupBy(string|array $columns): self
+    {
+        $this->groupBy = (array)$columns;
+        return $this;
+    }
+
+    public function having(string $condition, array $params = []): self
+    {
+        $this->having[] = $condition;
+        $this->bindings += $params;
         return $this;
     }
 
@@ -109,42 +185,67 @@ class Database
         return $this;
     }
 
-    public function limit(int $limit): self
+    public function limit(int $limit, ?int $offset = null): self
     {
         $this->limit = $limit;
+        $this->offset = $offset;
+        return $this;
+    }
+
+    public function debug(bool $state = true): self
+    {
+        $this->debug = $state;
         return $this;
     }
 
     // ===========================
-    // FETCH METHODS
+    // EXECUTION
     // ===========================
-    public function fetchAll(): array
+    public function get(): array
     {
         $sql = $this->buildSelect();
+        if ($this->debug) {
+            echo $this->toSql($sql), PHP_EOL;
+        }
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($this->bindings);
         return $stmt->fetchAll();
     }
 
-    public function fetchOne(): ?array
+    public function first(): ?array
     {
-        $sql = $this->buildSelect() . " LIMIT 1";
+        $this->limit(1);
+        return $this->get()[0] ?? null;
+    }
+
+    // Aggregate helpers
+    public function count(string $column = '*'): int { return (int)$this->aggregate("COUNT($column)"); }
+    public function sum(string $column): float { return (float)$this->aggregate("SUM($column)"); }
+    public function avg(string $column): float { return (float)$this->aggregate("AVG($column)"); }
+    public function min(string $column): mixed { return $this->aggregate("MIN($column)"); }
+    public function max(string $column): mixed { return $this->aggregate("MAX($column)"); }
+
+    protected function aggregate(string $func): mixed
+    {
+        $sql = $this->buildAggregate($func);
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($this->bindings);
-        $result = $stmt->fetch();
-        return $result ?: null;
+        return $stmt->fetchColumn();
     }
 
     public function insert(array $data): int
     {
         $columns = array_keys($data);
-        $params = array_map(fn($c) => ':' . $c, $columns);
+        $params = array_map(fn(string $c): string => ":$c", $columns);
         $sql = sprintf(
             "INSERT INTO `%s` (%s) VALUES (%s)",
             $this->table,
             implode(',', $columns),
             implode(',', $params)
         );
+        if ($this->debug) {
+            echo $this->toSql($sql, $data), PHP_EOL;
+        }
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($data);
         return (int)$this->pdo->lastInsertId();
@@ -154,12 +255,15 @@ class Database
     {
         $setParts = [];
         foreach ($data as $col => $val) {
-            $param = ':upd_' . $col;
+            $param = ":upd_$col";
             $setParts[] = "`$col` = $param";
             $this->bindings[$param] = $val;
         }
 
         $sql = sprintf("UPDATE `%s` SET %s %s", $this->table, implode(',', $setParts), $this->buildWhere());
+        if ($this->debug) {
+            echo $this->toSql($sql), PHP_EOL;
+        }
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($this->bindings);
         return $stmt->rowCount();
@@ -168,33 +272,89 @@ class Database
     public function delete(): int
     {
         $sql = sprintf("DELETE FROM `%s` %s", $this->table, $this->buildWhere());
+        if ($this->debug) {
+            echo $this->toSql($sql), PHP_EOL;
+        }
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($this->bindings);
         return $stmt->rowCount();
     }
 
     // ===========================
-    // HELPERS
+    // BUILD HELPERS
     // ===========================
     protected function buildSelect(): string
     {
-        $sql = "SELECT * FROM `{$this->table}`";
+        $cols = implode(', ', $this->columns);
+        $sql = "SELECT $cols FROM `{$this->table}`";
+        if ($this->joins !== []) {
+            $sql .= ' ' . implode(' ', $this->joins);
+        }
         $sql .= $this->buildWhere();
-        if ($this->orderBy) $sql .= " {$this->orderBy}";
-        if ($this->limit !== null) $sql .= " LIMIT {$this->limit}";
+        if ($this->groupBy !== []) {
+            $sql .= ' GROUP BY ' . implode(',', $this->groupBy);
+        }
+        if ($this->having !== []) {
+            $sql .= ' HAVING ' . implode(' AND ', $this->having);
+        }
+        if ($this->orderBy !== '') {
+            $sql .= ' ' . $this->orderBy;
+        }
+        if ($this->limit !== null) {
+            $sql .= " LIMIT {$this->limit}";
+            if ($this->offset !== null) {
+                $sql .= " OFFSET {$this->offset}";
+            }
+        }
+        return $sql;
+    }
+
+    protected function buildAggregate(string $func): string
+    {
+        $sql = "SELECT $func as aggregate FROM `{$this->table}`";
+        if ($this->joins !== []) {
+            $sql .= ' ' . implode(' ', $this->joins);
+        }
+        $sql .= $this->buildWhere();
         return $sql;
     }
 
     protected function buildWhere(): string
     {
-        return empty($this->where) ? '' : ' WHERE ' . implode(' AND ', $this->where);
+        return $this->where === [] ? '' : ' WHERE ' . implode(' AND ', $this->where);
+    }
+
+    protected function reset(): void
+    {
+        $this->table = '';
+        $this->columns = ['*'];
+        $this->joins = [];
+        $this->where = [];
+        $this->groupBy = [];
+        $this->having = [];
+        $this->orderBy = '';
+        $this->limit = $this->offset = null;
+        $this->bindings = [];
+    }
+
+    protected function toSql(string $sql, array $params = []): string
+    {
+        $replacements = $this->bindings + $params;
+        foreach ($replacements as $key => $val) {
+            $safe = is_numeric($val) ? $val : "'" . addslashes((string)$val) . "'";
+            $sql = str_replace($key, $safe, $sql);
+        }
+        return $sql;
     }
 
     // ===========================
-    // RAW AND TRANSACTION
+    // RAW + TRANSACTIONS
     // ===========================
     public function raw(string $sql, array $params = []): \PDOStatement
     {
+        if ($this->debug) {
+            echo $this->toSql($sql, $params), PHP_EOL;
+        }
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($params);
         return $stmt;
@@ -209,7 +369,7 @@ class Database
             return true;
         } catch (PDOException $e) {
             $this->pdo->rollBack();
-            throw new \Exception("Transaction failed: " . $e->getMessage());
+            throw new Exception("Transaction failed: {$e->getMessage()}");
         }
     }
 }

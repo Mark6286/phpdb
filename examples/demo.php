@@ -1,7 +1,7 @@
 <?php
 require __DIR__ . '/../vendor/autoload.php';
 
-use Reymark\Database\Database;
+use Database\Database;
 
 // Configure database
 Database::setConfig([
