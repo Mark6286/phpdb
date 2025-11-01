@@ -16,7 +16,7 @@ phpdb is a lightweight PHP library designed to simplify and speed up database qu
 
 ### 1. Install via Composer
 ```bash
-composer require mark6286/phpdb
+composer require reymark/database
 ```
 
 ### 2. Set up your configuration
